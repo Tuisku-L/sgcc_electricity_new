@@ -28,6 +28,8 @@ from io import BytesIO
 from PIL import Image
 from onnx import ONNX
 import platform
+import datetime
+import calendar
 
 DEBUG = False
 
@@ -274,13 +276,13 @@ class DataFetcher:
             balance_list = self._get_electric_balances(driver, user_id_list)  #
             time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
             ### get data except electricity charge balance
-            last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list  = self._get_other_data(driver, user_id_list)
+            last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list, usage, total_bill, last_usage, last_total_bill  = self._get_other_data(driver, user_id_list)
             time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
             driver.quit()
 
             logging.info("Webdriver quit after fetching data successfully.")
             logging.info("浏览器已退出")
-            return user_id_list, balance_list, last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list 
+            return user_id_list, balance_list, last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list, usage, total_bill, last_usage, last_total_bill
 
         finally:
             driver.quit()
@@ -394,6 +396,11 @@ class DataFetcher:
         # swithc to electricity usage page
         driver.get(ELECTRIC_USAGE_URL)
 
+        usage = 0
+        total_bill = 0
+        last_usage = 0
+        last_total_bill = 0
+
         # get data for each user id
         for i in range(1, len(user_id_list) + 1):
 
@@ -420,10 +427,11 @@ class DataFetcher:
                         f"Get month power charge for {user_id_list[i - 1]} successfully, {month[m]} usage is {month_usage[m]} KWh, charge is {month_charge[m]} CNY.")
             # get yesterday usage
             last_daily_datetime, last_daily_usage = self._get_yesterday_usage(driver)
-
             # 新增储存用电量
             if self.client is not None:
                 self.save_usage_data(driver, user_id_list[i - 1])
+                usage, total_bill = self.get_monthly_fee_by_db(user_id_list[i - 1])
+                last_usage, last_total_bill = self.get_monthly_fee_by_db(user_id_list[i - 1], True)
 
             if last_daily_usage is None:
                 logging.error(f"Get daily power consumption for {user_id_list[i - 1]} failed, pass")
@@ -445,8 +453,8 @@ class DataFetcher:
                 time.sleep(self.RETRY_WAIT_TIME_OFFSET_UNIT)
                 self._click_button(driver, By.XPATH,
                                    f"//body/div[@class='el-select-dropdown el-popper']//ul[@class='el-scrollbar__view el-select-dropdown__list']/li[{i + 1}]")
-
-        return last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list
+        
+        return last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list, usage, total_bill, last_usage, last_total_bill
 
     def _get_user_ids(self, driver):
 
@@ -582,7 +590,67 @@ class DataFetcher:
             except Exception as e:
                 logging.debug(f"{day}的用电量存入数据库失败,可能已经存在: {str(e)}")
 
-        self.connect.close()
+    def execute_query(self, sql):
+        """执行 SQL 查询并返回结果"""
+        try:
+            cursor = self.connect.execute(sql)
+            result = cursor.fetchone()
+            return result
+        except Exception as e:
+            logging.error(f"执行查询失败: {e}")
+            return None
+
+    def create_sql_query(self, previous_month=False):
+        """获取本月上月的第一天到最后一天, 生成 sql"""
+        today = datetime.date.today()
+        
+        if previous_month:
+            first_day_of_this_month = datetime.date(today.year, today.month, 1)
+            last_day_of_previous_month = first_day_of_this_month - datetime.timedelta(days=1)
+            first_day_of_month = datetime.date(last_day_of_previous_month.year, last_day_of_previous_month.month, 1)
+            last_day_of_month = last_day_of_previous_month
+        else:
+            first_day_of_month = datetime.date(today.year, today.month, 1)
+            last_day_of_month = datetime.date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+        
+        sql_query = f"SELECT SUM(usage) FROM {self.db_name} WHERE date BETWEEN '{first_day_of_month}' AND '{last_day_of_month}'"
+        return sql_query
+
+    def get_monthly_fee_by_db(self, user_id, previous_month=False):
+        self.connect_user_db(user_id)
+        sql = self.create_sql_query(previous_month)
+        result = self.execute_query(sql)
+        if result and result[0] is not None:
+            usage = result[0]
+            print(f"总用电量: {usage:.2f} KWh")
+            total_bill = self.calculate_electricity_bill(usage)
+            print(f"根据用电量计算的电费为：{total_bill:.2f}元")
+            return usage,total_bill
+        else: 
+            return 0, 0
+
+    def calculate_electricity_bill(self, units):
+        # 按照自己地区的价格修改
+        bill = 0.0
+
+        # 计算0-230千瓦时的电费
+        if units > 230:
+            bill += 230 * 0.4983
+        else:
+            bill += units * 0.4983
+            return bill
+
+        # 计算231-420千瓦时的电费
+        if units > 420:
+            bill += (420 - 230) * 0.5483
+        else:
+            bill += (units - 230) * 0.5483
+            return bill
+
+        # 计算421千瓦时以上的电费
+        bill += (units - 420) * 0.7983
+
+        return bill
 
     @staticmethod
     def _click_button(driver, button_search_type, button_search_key):

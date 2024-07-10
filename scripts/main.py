@@ -32,7 +32,6 @@ def main():
         sys.exit()
 
     logger_init(LOG_LEVEL)
-    logging.info("程序开始，当前仓库版本为1.4.1，仓库地址为https://github.com/ARC-MX/sgcc_electricity_new.git")
 
     fetcher = DataFetcher(PHONE_NUMBER, PASSWORD)
     updator = SensorUpdator(HASS_URL, HASS_TOKEN)
@@ -54,7 +53,7 @@ def main():
 
 def run_task(data_fetcher: DataFetcher, sensor_updator: SensorUpdator):
     try:
-        user_id_list, balance_list, last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list = data_fetcher.fetch()
+        user_id_list, balance_list, last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list, usage, total_bill, last_usage, last_total_bill = data_fetcher.fetch()
         # user_id_list, balance_list, last_daily_date_list, last_daily_usage_list, yearly_charge_list, yearly_usage_list, month_list, month_usage_list, month_charge_list = ['123456'],[58.1],['2024-05-12'],[3.0],['239.1'],['533'],['2024-04-01-2024-04-30'],['118'],['52.93']
         for i in range(0, len(user_id_list)):
             profix = f"_{user_id_list[i]}" if len(user_id_list) > 1 else ""
@@ -70,6 +69,18 @@ def run_task(data_fetcher: DataFetcher, sensor_updator: SensorUpdator):
                 sensor_updator.update(MONTH_CHARGE_SENSOR_NAME + profix, month_list[i], month_charge_list[i], BALANCE_UNIT, month=True)
             if month_usage_list[i] is not None:
                 sensor_updator.update(MONTH_USAGE_SENSOR_NAME + profix, month_list[i], month_usage_list[i], USAGE_UNIT, month=True)
+        if usage is not None:
+            usage = round(usage, 2)
+            sensor_updator.update(MONTH_USAGE_DB_SENSOR_NAME + profix, None, usage, USAGE_UNIT)
+        if total_bill  is not None:
+            total_bill = round(total_bill, 2)
+            sensor_updator.update(MONTH_USAGE_DB_BALANCE_SENSOR_NAME + profix, None, total_bill, BALANCE_UNIT)
+        if last_usage is not None:
+            last_usage = round(last_usage, 2)
+            sensor_updator.update(LAST_MONTH_USAGE_DB_SENSOR_NAME + profix, None, last_usage, USAGE_UNIT)
+        if last_total_bill  is not None:
+            last_total_bill = round(last_total_bill, 2)
+            sensor_updator.update(LAST_MONTH_USAGE_DB_BALANCE_SENSOR_NAME + profix, None, last_total_bill, BALANCE_UNIT)
         logging.info("state-refresh task run successfully!")
     except Exception as e:
         logging.error(f"state-refresh task failed, reason is {e}")
